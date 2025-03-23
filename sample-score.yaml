@@ -1,0 +1,89 @@
+apiVersion: score.dev/v1b1
+metadata:
+  name: nginx-app
+  environment: dev
+  provider: aws
+  region: eu-west-2
+  tags:
+    Project: NginxDeployment
+    Department: DevOps
+    ManagedBy: SCORE
+
+workloads:
+  nginx-web:
+    type: container
+    image: nginx:latest
+    resources:
+      cpu: 256
+      memory: 512
+    ports:
+      - port: 80
+        protocol: http
+    replicas: 2
+    environment:
+      NGINX_HOST: www.nginxak.com
+      NGINX_PORT: 80
+    healthCheck:
+      path: /health
+      port: 80
+      initialDelaySeconds: 30
+      periodSeconds: 10
+    scaling:
+      min: 2
+      max: 4
+      metrics:
+        - type: cpu
+          target: 70
+    volumes:
+      - name: nginx-config
+        path: /etc/nginx/conf.d
+        size: 1Gi
+    labels:
+      app: nginx
+      tier: frontend
+
+  nginx-logs:
+    type: container
+    image: fluent/fluentd:latest
+    resources:
+      cpu: 256
+      memory: 512
+    environment:
+      LOG_LEVEL: info
+      FORWARD_HOST: log-aggregator.example.com
+      FORWARD_PORT: 24224
+    volumes:
+      - name: nginx-logs
+        path: /fluentd/log
+        size: 2Gi
+    sideCar: true
+    dependsOn:
+      - nginx-web
+
+resources:
+  networking:
+    type: vpc
+    cidr: 10.0.0.0/16
+    subnets:
+      public: 2
+      private: 2
+  
+  loadBalancer:
+    type: alb
+    public: true
+    certificates:
+      - domain: www.nginxak.com
+    rules:
+      - host: www.nginxak.com
+        paths:
+          - path: /
+            service: nginx-web
+            port: 80
+  
+  storage:
+    type: s3
+    name: nginx-static-content
+    public: false
+    lifecycle:
+      enabled: true
+      days: 30
