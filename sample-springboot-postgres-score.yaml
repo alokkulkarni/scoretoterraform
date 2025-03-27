@@ -1,0 +1,149 @@
+apiVersion: score.dev/v1b1
+metadata:
+  name: spring-app
+  environment: dev
+  provider: aws
+  region: eu-west-2
+  tags:
+    Project: SpringBootApplication
+    Department: Engineering
+    ManagedBy: SCORE
+    Environment: Development
+
+workloads:
+  spring-api:
+    type: container
+    image: ${SPRING_IMAGE_URI:-springio/spring-boot-sample:latest}
+    resources:
+      cpu: 512
+      memory: 1024
+    ports:
+      - port: 8080
+        protocol: http
+    replicas: 2
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      SPRING_DATASOURCE_URL: jdbc:postgresql://${resource.database.endpoint}:5432/springbootdb
+      SPRING_DATASOURCE_USERNAME: ${resource.database.secrets.username}
+      SPRING_DATASOURCE_PASSWORD: ${resource.database.secrets.password}
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      SPRING_JPA_DATABASE_PLATFORM: org.hibernate.dialect.PostgreSQLDialect
+      JAVA_OPTS: "-Xms512m -Xmx768m"
+      SERVER_PORT: "8080"
+    healthCheck:
+      path: /actuator/health
+      port: 8080
+      initialDelaySeconds: 60
+      periodSeconds: 15
+      timeoutSeconds: 5
+      failureThreshold: 3
+    scaling:
+      min: 2
+      max: 6
+      metrics:
+        - type: cpu
+          target: 70
+    volumes:
+      - name: app-logs
+        path: /app/logs
+        size: 1Gi
+    dependsOn:
+      - database
+
+  database:
+    type: database
+    engine: postgres
+    version: "13.4"
+    resources:
+      instance: db.t3.small
+      storage: 20
+    backup:
+      retention: 7
+      preferredWindow: "03:00-04:00"
+    credentials:
+      username: ${DB_USERNAME:-postgres}
+      password: ${DB_PASSWORD:-generatesecurepassword}
+    parameters:
+      maxConnections: 100
+      sharedBuffers: "256MB"
+    database: springbootdb
+    secrets:
+      username: ${DB_USERNAME:-postgres}
+      password: ${DB_PASSWORD:-generatesecurepassword}
+
+resources:
+  networking:
+    type: vpc
+    cidr: 10.0.0.0/16
+    subnets:
+      public: 2
+      private: 3
+    securityGroups:
+      - name: app-sg
+        rules:
+          - type: ingress
+            port: 8080
+            source: loadBalancer
+          - type: egress
+            port: all
+            destination: all
+      - name: db-sg
+        rules:
+          - type: ingress
+            port: 5432
+            source: app-sg
+          - type: egress
+            port: all
+            destination: all
+  
+  loadBalancer:
+    type: alb
+    public: true
+    certificates:
+      - domain: ${DOMAIN_NAME:-app.example.com}
+    rules:
+      - host: ${HOST_NAME:-*}
+        paths:
+          - path: /*
+            service: spring-api
+            port: 8080
+    healthCheck:
+      path: /actuator/health
+      port: 8080
+      interval: 30
+      timeout: 5
+      healthyThreshold: 3
+      unhealthyThreshold: 5
+  
+  logging:
+    type: cloudwatch
+    groups:
+      - name: spring-api-logs
+        retention: 30
+      - name: database-logs
+        retention: 30
+
+  monitoring:
+    type: cloudwatch
+    alarms:
+      - name: high-cpu
+        metric: CPUUtilization
+        threshold: 80
+        evaluationPeriods: 3
+        period: 60
+        statistic: Average
+        comparison: GreaterThanThreshold
+        namespace: AWS/ECS
+        dimensions:
+          ClusterName: ${metadata.name}-${metadata.environment}
+          ServiceName: spring-api
+      - name: db-connections
+        metric: DatabaseConnections
+        threshold: 80
+        evaluationPeriods: 3
+        period: 60
+        statistic: Average
+        comparison: GreaterThanThreshold
+        namespace: AWS/RDS
+        dimensions:
+          DBInstanceIdentifier: ${resource.database.id}
